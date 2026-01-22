@@ -18,12 +18,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
-          pip install psycopg2-binary requests beautifulsoup4 unidecode python-dotenv
+          pip install psycopg2-binary requests beautifulsoup4 unidecode python-dotenv playwright
+
+      - name: Install Playwright Chromium
+        run: |
+          playwright install chromium
 
       - name: Run ingestion
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CI: "true"
         run: |
           python -m jobs.run_ingest

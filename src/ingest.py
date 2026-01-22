@@ -26,6 +26,7 @@ def ingest_listings(conn, listings, neighborhood_map, source):
             continue
 
         neighborhood_key = l["neighborhood"]
+
         if neighborhood_key not in neighborhood_map:
             continue
 

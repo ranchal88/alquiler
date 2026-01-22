@@ -5,7 +5,7 @@ def validate_today_snapshot(conn):
         FROM listing_snapshot
         WHERE snapshot_date = CURRENT_DATE
           AND (square_meters < 20 OR square_meters > 400
-               OR price_per_m2 < 6 OR price_per_m2 > 50)
+               OR price_per_m2 < 8 OR price_per_m2 > 45)
     """)
     bad = cur.fetchone()[0]
 

@@ -5,10 +5,17 @@ import random
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 from playwright.sync_api import sync_playwright
+from pathlib import Path
 
 # ======================
 # CONFIGURACIÓN GENERAL
 # ======================
+
+_playwright = None
+_browser = None
+_context = None
+_page = None
+
 
 BASE_URL = "https://www.idealista.com"
 
@@ -57,14 +64,35 @@ def extract_number(text: str | None) -> int | None:
 # FETCH HTML (PLAYWRIGHT)
 # ======================
 
-def fetch(url: str) -> str:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
+def init_browser():
+    global _playwright, _browser, _context, _page
 
-        context = browser.new_context(
+    if _browser is not None:
+        return
+
+    _playwright = sync_playwright().start()
+
+    _browser = _playwright.chromium.launch(
+        headless=HEADLESS,
+        args=["--disable-blink-features=AutomationControlled"],
+        slow_mo=50
+    )
+
+    state_path = Path("idealista_state.json")
+
+    if state_path.exists():
+        _context = _browser.new_context(
+            storage_state="idealista_state.json",
+            locale="es-ES",
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        )
+    else:
+        _context = _browser.new_context(
             locale="es-ES",
             viewport={"width": 1280, "height": 800},
             user_agent=(
@@ -74,31 +102,50 @@ def fetch(url: str) -> str:
             )
         )
 
-        page = context.new_page()
-        page.goto(url, timeout=30000)
-        page.wait_for_load_state("domcontentloaded")
 
-        # aceptar cookies si aparece
-        try:
-            page.click('button:has-text("Aceptar")', timeout=5000)
-            time.sleep(1)
-        except:
-            pass
 
-        # esperar anuncios
-        try:
-            page.wait_for_selector("article[data-element-id]", timeout=15000)
-        except:
-            pass
+    _page = _context.new_page()
 
-        # scroll humano
-        for _ in range(3):
-            page.mouse.wheel(0, random.randint(900, 1400))
-            time.sleep(random.uniform(1, 2))
+def close_browser():
+    global _context, _browser, _playwright
 
-        html = page.content()
-        browser.close()
-        return html
+    if _context:
+        _context.storage_state(path="idealista_state.json")
+    if _browser:
+        _browser.close()
+    if _playwright:
+        _playwright.stop()
+
+
+
+def fetch(url: str) -> str:
+    init_browser()
+
+    _page.goto(url, timeout=30000)
+    _page.wait_for_load_state("domcontentloaded")
+
+
+
+    # aceptar cookies SOLO una vez
+    try:
+        _page.click('button:has-text("Aceptar cookies")', timeout=3000)
+        time.sleep(1)
+    except:
+        pass
+
+    # esperar anuncios
+    try:
+        _page.wait_for_selector("article[data-element-id]", timeout=15000)
+    except:
+        if _page.locator("iframe").count() > 0:
+            raise RuntimeError("🚨 Captcha visible, resuélvelo manualmente")
+
+    # scroll humano
+    for _ in range(3):
+        _page.mouse.wheel(0, random.randint(900, 1400))
+        time.sleep(random.uniform(1, 2))
+
+    return _page.content()
 
 
 # ======================
@@ -181,16 +228,21 @@ def extract_neighborhood(neighborhood_slug: str, district_slug: str, pages: int 
 def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
     all_results = []
 
-    for slug, cfg in NEIGHBORHOODS.items():
-        print(f"→ Extrayendo {slug}...")
-        listings = extract_neighborhood(
-            neighborhood_slug=slug,
-            district_slug=cfg["district"],
-            pages=pages
-        )
-        all_results.extend(listings)
+    try:
+        for slug, cfg in NEIGHBORHOODS.items():
+            print(f"→ Extrayendo {slug}...")
+            listings = extract_neighborhood(
+                neighborhood_slug=slug,
+                district_slug=cfg["district"],
+                pages=pages
+            )
+            all_results.extend(listings)
 
-        # pausa extra entre barrios
-        time.sleep(random.uniform(8, 15))
+            time.sleep(random.uniform(8, 15))
 
+    except RuntimeError as e:
+        print(str(e))
+        return []
+    finally:
+        close_browser()
     return all_results

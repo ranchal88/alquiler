@@ -4,7 +4,7 @@ import re
 import random
 from bs4 import BeautifulSoup
 from unidecode import unidecode
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from pathlib import Path
 
 # ======================
@@ -41,6 +41,18 @@ NEIGHBORHOODS = {
     },
     "delicias": {
         "district": "arganzuela",
+    },
+    "recoletos": {
+        "district": "barrio-de-salamanca",
+    },
+    "chueca-justicia": {
+        "district": "centro",
+    },
+    "lavapies-embajadores": {
+        "district": "centro",
+    },
+    "cuatro-caminos": {
+        "district": "tetuan",
     },
 }
 
@@ -80,41 +92,63 @@ def init_browser():
 
     state_path = Path("idealista_state.json")
 
+    # build the common arguments for new_context
+    ctx_kwargs = dict(
+        locale="es-ES",
+        viewport={"width": 1280, "height": 800},
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    )
+
     if state_path.exists():
-        _context = _browser.new_context(
-            storage_state="idealista_state.json",
-            locale="es-ES",
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        )
+        # sometimes the saved state contains origins that fail to load
+        # (e.g. rubiconproject) and new_context will explode with
+        # "Error setting storage state".  Try once and fall back if it
+        # fails by deleting the state file.
+        try:
+            _context = _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
+        except Exception as e:
+            print(f"⚠️ error applying storage_state: {e}\n   removing {state_path} and retrying")
+            try:
+                state_path.unlink()
+            except OSError:
+                pass
+            _context = _browser.new_context(**ctx_kwargs)
     else:
-        _context = _browser.new_context(
-            locale="es-ES",
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        )
+        _context = _browser.new_context(**ctx_kwargs)
 
 
 
     _page = _context.new_page()
 
 def close_browser():
-    global _context, _browser, _playwright
+    global _page, _context, _browser, _playwright
 
-    if _context:
-        _context.storage_state(path="idealista_state.json")
-    if _browser:
-        _browser.close()
-    if _playwright:
-        _playwright.stop()
+    try:
+        if _context:
+            _context.storage_state(path="idealista_state.json")
+    except Exception as e:
+        print(f"⚠️ Error guardando state: {e}")
+
+    try:
+        if _page:
+            _page.close()
+    except Exception as e:
+        print(f"⚠️ Error cerrando page: {e}")
+
+    try:
+        if _context:
+            _context.close()
+    except Exception as e:
+        print(f"⚠️ Error cerrando context: {e}")
+
+    # 🚫 NO cerrar browser en Windows
+    # 🚫 NO playwright.stop()
+
+    print("✅ Navegador liberado (cierre implícito por fin de proceso)")
 
 
 
@@ -128,7 +162,7 @@ def fetch(url: str) -> str:
 
     # aceptar cookies SOLO una vez
     try:
-        _page.click('button:has-text("Aceptar cookies")', timeout=3000)
+        _page.click('button:has-text("Aceptar y continuar")', timeout=3000)
         time.sleep(1)
     except:
         pass

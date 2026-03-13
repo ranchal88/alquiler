@@ -1,0 +1,35 @@
+name: Weekly Market Aggregation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"   # lunes 05:00 UTC
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run weekly neighborhood aggregation
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -m jobs.run_aggregate_weekly
+
+      - name: Run market indexes aggregation
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -m jobs.run_market_indexes

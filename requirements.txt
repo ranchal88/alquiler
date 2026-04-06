@@ -3,4 +3,6 @@ python-dotenv
 requests
 matplotlib
 pandas
+beautifulsoup4
+unidecode
 playwright

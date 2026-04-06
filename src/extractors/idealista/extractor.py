@@ -2,6 +2,7 @@ import os
 import time
 import re
 import random
+import threading
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -21,6 +22,18 @@ BASE_URL = "https://www.idealista.com"
 
 # Detecta si estamos en CI (GitHub Actions)
 HEADLESS = os.getenv("CI", "false").lower() == "true"
+
+PROXY = os.getenv("IDEALISTA_PROXY")
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
+]
+
+def random_user_agent():
+    return random.choice(USER_AGENTS)
 
 # Barrios operativos (slugs EXACTOS de Idealista)
 NEIGHBORHOODS = {
@@ -82,32 +95,47 @@ def init_browser():
     if _browser is not None:
         return
 
-    _playwright = sync_playwright().start()
+    if _playwright is None:
+        _playwright = sync_playwright().start()
 
     _browser = _playwright.chromium.launch(
         headless=HEADLESS,
-        args=["--disable-blink-features=AutomationControlled"],
-        slow_mo=50
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-setuid-sandbox",
+        ],
+        slow_mo=40,
     )
 
     state_path = Path("idealista_state.json")
 
-    # build the common arguments for new_context
     ctx_kwargs = dict(
         locale="es-ES",
-        viewport={"width": 1280, "height": 800},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
+        timezone_id="Europe/Madrid",
+        viewport={
+            "width": random.randint(1140, 1360),
+            "height": random.randint(740, 860),
+        },
+        user_agent=random_user_agent(),
+        java_script_enabled=True,
+        bypass_csp=True,
+        accept_downloads=False,
+        extra_http_headers={
+            "accept-language": "es-ES,es;q=0.9,en;q=0.8",
+            "sec-ch-ua": "\"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\"",
+        },
     )
 
+    if PROXY:
+        ctx_kwargs["proxy"] = {"server": PROXY}
+
+    print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}")
+
     if state_path.exists():
-        # sometimes the saved state contains origins that fail to load
-        # (e.g. rubiconproject) and new_context will explode with
-        # "Error setting storage state".  Try once and fall back if it
-        # fails by deleting the state file.
         try:
             _context = _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
         except Exception as e:
@@ -120,66 +148,115 @@ def init_browser():
     else:
         _context = _browser.new_context(**ctx_kwargs)
 
-
-
     _page = _context.new_page()
+
+    # Spoof common navigator properties
+    _page.add_init_script(
+        """
+        Object.defineProperty(navigator, 'webdriver', {get: () => false});
+        Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es']});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        window.chrome = { runtime: {} };
+        """
+    )
+
 
 def close_browser():
     global _page, _context, _browser, _playwright
 
-    try:
-        if _context:
-            _context.storage_state(path="idealista_state.json")
-    except Exception as e:
-        print(f"⚠️ Error guardando state: {e}")
+    def _safe_action(name: str, action, timeout=12):
+        if action is None:
+            return
+        def target():
+            try:
+                print(f"[DEBUG] close_browser: {name} start")
+                action()
+                print(f"[DEBUG] close_browser: {name} ok")
+            except Exception as e:
+                print(f"⚠️ close_browser: {name} failed: {e}")
 
-    try:
-        if _page:
-            _page.close()
-    except Exception as e:
-        print(f"⚠️ Error cerrando page: {e}")
+        t = threading.Thread(target=target, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            print(f"⚠️ close_browser: {name} timeout {timeout}s; skip")
 
-    try:
-        if _context:
-            _context.close()
-    except Exception as e:
-        print(f"⚠️ Error cerrando context: {e}")
+    # storage state as separate action for debug
+    if _context:
+        _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
 
-    # 🚫 NO cerrar browser en Windows
-    # 🚫 NO playwright.stop()
+    _safe_action("_page.close", _page.close if _page else None)
+    _safe_action("_context.close", _context.close if _context else None)
+    _safe_action("_browser.close", _browser.close if _browser else None)
+    _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
 
-    print("✅ Navegador liberado (cierre implícito por fin de proceso)")
+    _page = None
+    _context = None
+    _browser = None
+    _playwright = None
+
+    print("✅ Navegador liberado")
 
 
 
 def fetch(url: str) -> str:
     init_browser()
 
-    _page.goto(url, timeout=30000)
-    _page.wait_for_load_state("domcontentloaded")
+    max_fetch_attempts = 3
+    for attempt in range(1, max_fetch_attempts + 1):
+        try:
+            print(f"[DEBUG] fetch: intento {attempt} url={url}")
+            # navegación con ligeras esperas
+            _page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            time.sleep(random.uniform(1.2, 2.3))
 
+            # aceptar cookies SOLO una vez
+            try:
+                _page.click('button:has-text("Aceptar y continuar")', timeout=3000)
+                time.sleep(random.uniform(0.8, 1.5))
+            except:
+                pass
 
+            # bloquear la detección por el contenido de página de abuso
+            blocked_text = _page.locator("text=Se ha detectado un uso indebido").count() > 0
+            blocked_text = blocked_text or _page.locator("text=acceso se ha bloqueado").count() > 0
+            blocked_text = blocked_text or _page.locator("text=uso indebido").count() > 0
+            blocked_text = blocked_text or _page.locator("text=blocked").count() > 0
+            if blocked_text:
+                _page.screenshot(path="idealista_blocked.png")
+                print("[DEBUG] Bloqueo detectado en page, guardando idealista_blocked.png")
+                raise RuntimeError("🚨 Idealista bloqueado (captcha/antibots). Revisa idealista_blocked.png")
 
-    # aceptar cookies SOLO una vez
-    try:
-        _page.click('button:has-text("Aceptar y continuar")', timeout=3000)
-        time.sleep(1)
-    except:
-        pass
+            # scroll y movimientos humanos
+            for _ in range(random.randint(2, 4)):
+                x = random.randint(100, 1200)
+                y = random.randint(200, 700)
+                _page.mouse.move(x, y)
+                _page.mouse.wheel(0, random.randint(600, 1200))
+                time.sleep(random.uniform(0.8, 2.2))
 
-    # esperar anuncios
-    try:
-        _page.wait_for_selector("article[data-element-id]", timeout=15000)
-    except:
-        if _page.locator("iframe").count() > 0:
-            raise RuntimeError("🚨 Captcha visible, resuélvelo manualmente")
+            # esperar el contenido principal
+            try:
+                _page.wait_for_selector("article[data-element-id]", timeout=18000)
+            except PlaywrightTimeoutError:
+                if _page.locator("iframe").count() > 0:
+                    _page.screenshot(path="idealista_captcha_iframe.png")
+                    raise RuntimeError("🚨 Captcha visible en iframe. Revisa idealista_captcha_iframe.png")
+                raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Possible bloqueo.")
 
-    # scroll humano
-    for _ in range(3):
-        _page.mouse.wheel(0, random.randint(900, 1400))
-        time.sleep(random.uniform(1, 2))
+            time.sleep(random.uniform(1.0, 2.5))
+            return _page.content()
 
-    return _page.content()
+        except Exception as e:
+            close_browser()
+            if attempt < max_fetch_attempts:
+                wait = random.uniform(30, 60)
+                print(f"[WARN] fetch fallo ({attempt}/{max_fetch_attempts}): {e}. reintentando en {wait:.1f}s...")
+                time.sleep(wait)
+                continue
+            if "Target page, context or browser has been closed" in str(e):
+                raise RuntimeError("🚨 Página cerrada por bloqueo. Forzar reintento.") from e
+            raise
 
 
 # ======================
@@ -250,10 +327,14 @@ def extract_neighborhood(neighborhood_slug: str, district_slug: str, pages: int 
                 f"{district_slug}/{neighborhood_slug}/pagina-{page}.htm"
             )
 
-        html = fetch(url)
+        try:
+            html = fetch(url)
+        except Exception as e:
+            print(f"[ERROR] {neighborhood_slug} pagina {page} falló: {e}")
+            break
+
         listings = parse_listings(html, neighborhood_slug)
         results.extend(listings)
-
         time.sleep(random.uniform(3, 6))
 
     return results
@@ -265,18 +346,18 @@ def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
     try:
         for slug, cfg in NEIGHBORHOODS.items():
             print(f"→ Extrayendo {slug}...")
-            listings = extract_neighborhood(
-                neighborhood_slug=slug,
-                district_slug=cfg["district"],
-                pages=pages
-            )
-            all_results.extend(listings)
+            try:
+                listings = extract_neighborhood(
+                    neighborhood_slug=slug,
+                    district_slug=cfg["district"],
+                    pages=pages
+                )
+                all_results.extend(listings)
+            except Exception as e:
+                print(f"[ERROR] No se pudieron extraer {slug}: {e}")
 
             time.sleep(random.uniform(8, 15))
-
-    except RuntimeError as e:
-        print(str(e))
-        return []
     finally:
         close_browser()
+
     return all_results

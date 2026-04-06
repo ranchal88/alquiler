@@ -3,3 +3,4 @@ python-dotenv
 requests
 matplotlib
 pandas
+playwright

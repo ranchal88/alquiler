@@ -1,0 +1,42 @@
+name: Idealista Ingest Schedule
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 */2 * *"   # cada 2 días a las 05:00 UTC
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      IDEALISTA_PROXY: ${{ secrets.IDEALISTA_PROXY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright
+          python -m playwright install chromium
+
+      - name: Run ingest
+        run: |
+          python -m jobs.run_ingest
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idealista-debug-screenshots
+          path: idealista_*.png
+          if-no-files-found: ignore

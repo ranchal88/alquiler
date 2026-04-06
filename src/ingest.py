@@ -20,9 +20,8 @@ def ingest_listings(conn, listings, neighborhood_map, source, max_retries: int =
     no haya duplicados en caso de volver a intentar el mismo lote.
     """
 
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
-
         # Crear data_run
         cur.execute(
             "INSERT INTO data_run (source, records_ingested) VALUES (%s, 0) RETURNING run_id",
@@ -93,20 +92,12 @@ def ingest_listings(conn, listings, neighborhood_map, source, max_retries: int =
         conn.commit()
         return inserted
 
-    except OperationalError:
-        # Se perdió la conexión antes de hacer commit. cierro y reintento
-        try:
-            conn.close()
-        except Exception:
-            pass
-        if max_retries > 0:
-            new_conn = get_conn()
-            return ingest_listings(new_conn, listings, neighborhood_map, source, max_retries - 1)
-        # si no quedan reintentos, propagamos
+    except (OperationalError, InterfaceError):
+        # No cerramos la conexión aquí. el llamador decide reconectar.
+        conn.rollback()
         raise
-    except InterfaceError:
-        # También puede venir por intentar usar una conexión cerrada
-        if max_retries > 0:
-            new_conn = get_conn()
-            return ingest_listings(new_conn, listings, neighborhood_map, source, max_retries - 1)
+    except Exception:
+        conn.rollback()
         raise
+    finally:
+        cur.close()

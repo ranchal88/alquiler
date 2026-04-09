@@ -1,3 +1,4 @@
+import asyncio
 from src.db import get_conn
 from src.geo import load_neighborhood_map
 from src.ingest import ingest_listings
@@ -9,7 +10,7 @@ if __name__ == "__main__":
     try:
         neighborhood_map = load_neighborhood_map(conn)
 
-        listings = extract_all_neighborhoods(pages=3)
+        listings = asyncio.run(extract_all_neighborhoods(pages=3))
 
         print(f"Extraídos: {len(listings)}")
         print(listings[:3])  # sanity check

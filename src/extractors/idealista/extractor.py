@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import re
@@ -5,7 +6,7 @@ import random
 import threading
 from bs4 import BeautifulSoup
 from unidecode import unidecode
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from pathlib import Path
 
 # ======================
@@ -89,14 +90,14 @@ def extract_number(text: str | None) -> int | None:
 # FETCH HTML (PLAYWRIGHT)
 # ======================
 
-def init_browser():
+async def init_browser():
     global _playwright, _browser, _context, _page
 
     if _browser is not None:
         return
 
     if _playwright is None:
-        _playwright = sync_playwright().start()
+        _playwright = await async_playwright().start()
 
     _browser = _playwright.chromium.launch(
         headless=HEADLESS,
@@ -161,34 +162,30 @@ def init_browser():
     )
 
 
-def close_browser():
+async def close_browser():
     global _page, _context, _browser, _playwright
 
-    def _safe_action(name: str, action, timeout=12):
+    async def _safe_action(name: str, action, timeout=12):
         if action is None:
             return
-        def target():
-            try:
-                print(f"[DEBUG] close_browser: {name} start")
+        try:
+            print(f"[DEBUG] close_browser: {name} start")
+            if asyncio.iscoroutinefunction(action):
+                await action()
+            else:
                 action()
-                print(f"[DEBUG] close_browser: {name} ok")
-            except Exception as e:
-                print(f"⚠️ close_browser: {name} failed: {e}")
-
-        t = threading.Thread(target=target, daemon=True)
-        t.start()
-        t.join(timeout)
-        if t.is_alive():
-            print(f"⚠️ close_browser: {name} timeout {timeout}s; skip")
+            print(f"[DEBUG] close_browser: {name} ok")
+        except Exception as e:
+            print(f"⚠️ close_browser: {name} failed: {e}")
 
     # storage state as separate action for debug
     if _context:
-        _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
+        await _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
 
-    _safe_action("_page.close", _page.close if _page else None)
-    _safe_action("_context.close", _context.close if _context else None)
-    _safe_action("_browser.close", _browser.close if _browser else None)
-    _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
+    await _safe_action("_page.close", _page.close if _page else None)
+    await _safe_action("_context.close", _context.close if _context else None)
+    await _safe_action("_browser.close", _browser.close if _browser else None)
+    await _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
 
     _page = None
     _context = None
@@ -199,31 +196,31 @@ def close_browser():
 
 
 
-def fetch(url: str) -> str:
-    init_browser()
+async def fetch(url: str) -> str:
+    await init_browser()
 
     max_fetch_attempts = 3
     for attempt in range(1, max_fetch_attempts + 1):
         try:
             print(f"[DEBUG] fetch: intento {attempt} url={url}")
             # navegación con ligeras esperas
-            _page.goto(url, timeout=45000, wait_until="domcontentloaded")
-            time.sleep(random.uniform(1.2, 2.3))
+            await _page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            await asyncio.sleep(random.uniform(1.2, 2.3))
 
             # aceptar cookies SOLO una vez
             try:
-                _page.click('button:has-text("Aceptar y continuar")', timeout=3000)
-                time.sleep(random.uniform(0.8, 1.5))
+                await _page.click('button:has-text("Aceptar y continuar")', timeout=3000)
+                await asyncio.sleep(random.uniform(0.8, 1.5))
             except:
                 pass
 
             # bloquear la detección por el contenido de página de abuso
-            blocked_text = _page.locator("text=Se ha detectado un uso indebido").count() > 0
-            blocked_text = blocked_text or _page.locator("text=acceso se ha bloqueado").count() > 0
-            blocked_text = blocked_text or _page.locator("text=uso indebido").count() > 0
-            blocked_text = blocked_text or _page.locator("text=blocked").count() > 0
+            blocked_text = await _page.locator("text=Se ha detectado un uso indebido").count() > 0
+            blocked_text = blocked_text or await _page.locator("text=acceso se ha bloqueado").count() > 0
+            blocked_text = blocked_text or await _page.locator("text=uso indebido").count() > 0
+            blocked_text = blocked_text or await _page.locator("text=blocked").count() > 0
             if blocked_text:
-                _page.screenshot(path="idealista_blocked.png")
+                await _page.screenshot(path="idealista_blocked.png")
                 print("[DEBUG] Bloqueo detectado en page, guardando idealista_blocked.png")
                 raise RuntimeError("🚨 Idealista bloqueado (captcha/antibots). Revisa idealista_blocked.png")
 
@@ -231,28 +228,28 @@ def fetch(url: str) -> str:
             for _ in range(random.randint(2, 4)):
                 x = random.randint(100, 1200)
                 y = random.randint(200, 700)
-                _page.mouse.move(x, y)
-                _page.mouse.wheel(0, random.randint(600, 1200))
-                time.sleep(random.uniform(0.8, 2.2))
+                await _page.mouse.move(x, y)
+                await _page.mouse.wheel(0, random.randint(600, 1200))
+                await asyncio.sleep(random.uniform(0.8, 2.2))
 
             # esperar el contenido principal
             try:
-                _page.wait_for_selector("article[data-element-id]", timeout=18000)
+                await _page.wait_for_selector("article[data-element-id]", timeout=18000)
             except PlaywrightTimeoutError:
-                if _page.locator("iframe").count() > 0:
-                    _page.screenshot(path="idealista_captcha_iframe.png")
+                if await _page.locator("iframe").count() > 0:
+                    await _page.screenshot(path="idealista_captcha_iframe.png")
                     raise RuntimeError("🚨 Captcha visible en iframe. Revisa idealista_captcha_iframe.png")
                 raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Possible bloqueo.")
 
-            time.sleep(random.uniform(1.0, 2.5))
-            return _page.content()
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+            return await _page.content()
 
         except Exception as e:
-            close_browser()
+            await close_browser()
             if attempt < max_fetch_attempts:
                 wait = random.uniform(30, 60)
                 print(f"[WARN] fetch fallo ({attempt}/{max_fetch_attempts}): {e}. reintentando en {wait:.1f}s...")
-                time.sleep(wait)
+                await asyncio.sleep(wait)
                 continue
             if "Target page, context or browser has been closed" in str(e):
                 raise RuntimeError("🚨 Página cerrada por bloqueo. Forzar reintento.") from e
@@ -315,7 +312,7 @@ def parse_listings(html: str, neighborhood_slug: str) -> list[dict]:
 # EXTRACTORES
 # ======================
 
-def extract_neighborhood(neighborhood_slug: str, district_slug: str, pages: int = 3) -> list[dict]:
+async def extract_neighborhood(neighborhood_slug: str, district_slug: str, pages: int = 3) -> list[dict]:
     results = []
 
     for page in range(1, pages + 1):
@@ -328,26 +325,26 @@ def extract_neighborhood(neighborhood_slug: str, district_slug: str, pages: int 
             )
 
         try:
-            html = fetch(url)
+            html = await fetch(url)
         except Exception as e:
             print(f"[ERROR] {neighborhood_slug} pagina {page} falló: {e}")
             break
 
         listings = parse_listings(html, neighborhood_slug)
         results.extend(listings)
-        time.sleep(random.uniform(3, 6))
+        await asyncio.sleep(random.uniform(3, 6))
 
     return results
 
 
-def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
+async def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
     all_results = []
 
     try:
         for slug, cfg in NEIGHBORHOODS.items():
             print(f"→ Extrayendo {slug}...")
             try:
-                listings = extract_neighborhood(
+                listings = await extract_neighborhood(
                     neighborhood_slug=slug,
                     district_slug=cfg["district"],
                     pages=pages
@@ -356,8 +353,8 @@ def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
             except Exception as e:
                 print(f"[ERROR] No se pudieron extraer {slug}: {e}")
 
-            time.sleep(random.uniform(8, 15))
+            await asyncio.sleep(random.uniform(8, 15))
     finally:
-        close_browser()
+        await close_browser()
 
     return all_results

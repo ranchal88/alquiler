@@ -93,12 +93,17 @@ def extract_number(text: str | None) -> int | None:
 async def init_browser():
     global _playwright, _browser, _context, _page
 
+    print("[DEBUG] init_browser start")
+
     if _browser is not None:
+        print("[DEBUG] init_browser: browser already exists")
         return
 
     if _playwright is None:
+        print("[DEBUG] starting playwright")
         _playwright = await async_playwright().start()
 
+    print("[DEBUG] launching browser")
     _browser = await _playwright.chromium.launch(
         headless=HEADLESS,
         args=[

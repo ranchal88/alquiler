@@ -99,7 +99,7 @@ async def init_browser():
     if _playwright is None:
         _playwright = await async_playwright().start()
 
-    _browser = _playwright.chromium.launch(
+    _browser = await _playwright.chromium.launch(
         headless=HEADLESS,
         args=[
             "--disable-blink-features=AutomationControlled",
@@ -138,18 +138,18 @@ async def init_browser():
 
     if state_path.exists():
         try:
-            _context = _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
+            _context = await _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
         except Exception as e:
             print(f"⚠️ error applying storage_state: {e}\n   removing {state_path} and retrying")
             try:
                 state_path.unlink()
             except OSError:
                 pass
-            _context = _browser.new_context(**ctx_kwargs)
+            _context = await _browser.new_context(**ctx_kwargs)
     else:
-        _context = _browser.new_context(**ctx_kwargs)
+        _context = await _browser.new_context(**ctx_kwargs)
 
-    _page = _context.new_page()
+    _page = await _context.new_page()
 
     # Spoof common navigator properties
     _page.add_init_script(

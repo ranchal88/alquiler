@@ -37,16 +37,6 @@ def get_conn():
 
     database_url = _fix_database_url(database_url)
 
-    parsed = urlparse(database_url)
-    if parsed.hostname:
-        try:
-            socket.gethostbyname(parsed.hostname)
-        except socket.gaierror:
-            raise RuntimeError(
-                f"No se puede resolver el host de la DB: {parsed.hostname}. "
-                "Revisa conexión DNS / NETWORK / DATABASE_URL."
-            )
-
     return psycopg2.connect(
         database_url,
         connect_timeout=15,

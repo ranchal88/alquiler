@@ -46,6 +46,9 @@ if __name__ == "__main__":
                 )
             # cada batch hace commit internamente
 
+        # reconectar para evitar SSL timeout
+        conn.close()
+        conn = get_conn()
         validate_today_snapshot(conn)
         print(f"Ingestados en DB: {inserted}")
     finally:

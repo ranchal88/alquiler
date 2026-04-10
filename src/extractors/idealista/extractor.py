@@ -179,12 +179,14 @@ async def close_browser():
     await _safe_action("_page.close", _page.close if _page else None)
     await _safe_action("_context.close", _context.close if _context else None)
     await _safe_action("_browser.close", _browser.close if _browser else None)
-    await _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
+    # Don't stop playwright, keep it running
+    # await _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
 
     _page = None
     _context = None
     _browser = None
-    _playwright = None
+    # Keep _playwright running
+    # _playwright = None
 
     print("✅ Navegador liberado")
 
@@ -350,5 +352,10 @@ async def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
             await asyncio.sleep(random.uniform(8, 15))
     finally:
         await close_browser()
+        if _playwright:
+            try:
+                await _playwright.stop()
+            except:
+                pass
 
     return all_results

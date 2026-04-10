@@ -3,7 +3,6 @@ import os
 import time
 import re
 import random
-import threading
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -141,6 +140,7 @@ async def init_browser():
 
     print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}")
 
+    print(f"[DEBUG] browser type={type(_browser)}")
     if state_path.exists():
         try:
             _context = await _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
@@ -157,7 +157,7 @@ async def init_browser():
     _page = await _context.new_page()
 
     # Spoof common navigator properties
-    _page.add_init_script(
+    await _page.add_init_script(
         """
         Object.defineProperty(navigator, 'webdriver', {get: () => false});
         Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es']});
@@ -175,10 +175,9 @@ async def close_browser():
             return
         try:
             print(f"[DEBUG] close_browser: {name} start")
-            if asyncio.iscoroutinefunction(action):
-                await action()
-            else:
-                action()
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
             print(f"[DEBUG] close_browser: {name} ok")
         except Exception as e:
             print(f"⚠️ close_browser: {name} failed: {e}")

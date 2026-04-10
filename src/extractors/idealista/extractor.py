@@ -193,11 +193,10 @@ async def close_browser():
 
 
 async def fetch(url: str) -> str:
-    await init_browser()
-
     max_fetch_attempts = 3
     for attempt in range(1, max_fetch_attempts + 1):
         try:
+            await init_browser()
             print(f"[DEBUG] fetch: intento {attempt} url={url}")
             # navegación con ligeras esperas
             await _page.goto(url, timeout=45000, wait_until="domcontentloaded")

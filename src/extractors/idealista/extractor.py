@@ -92,17 +92,17 @@ def extract_number(text: str | None) -> int | None:
 async def init_browser():
     global _playwright, _browser, _context, _page
 
-    print("[DEBUG] init_browser start")
+    print("[DEBUG] init_browser start", flush=True)
 
     if _browser is not None:
-        print("[DEBUG] init_browser: browser already exists")
+        print("[DEBUG] init_browser: browser already exists", flush=True)
         return
 
     if _playwright is None:
-        print("[DEBUG] starting playwright")
-        _playwright = await async_playwright().start()
+        print("[DEBUG] starting playwright", flush=True)
+        _playwright = await async_playwright().__aenter__()
 
-    print("[DEBUG] launching browser")
+    print("[DEBUG] launching browser", flush=True)
     _browser = await _playwright.chromium.launch(
         headless=HEADLESS,
         args=[
@@ -138,14 +138,14 @@ async def init_browser():
     if PROXY:
         ctx_kwargs["proxy"] = {"server": PROXY}
 
-    print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}")
+    print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}", flush=True)
 
-    print(f"[DEBUG] browser type={type(_browser)}")
+    print(f"[DEBUG] browser type={type(_browser)}", flush=True)
     if state_path.exists():
         try:
             _context = await _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
         except Exception as e:
-            print(f"⚠️ error applying storage_state: {e}\n   removing {state_path} and retrying")
+            print(f"⚠️ error applying storage_state: {e}\n   removing {state_path} and retrying", flush=True)
             try:
                 state_path.unlink()
             except OSError:

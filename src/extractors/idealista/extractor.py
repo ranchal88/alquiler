@@ -141,18 +141,8 @@ async def init_browser():
     print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}", flush=True)
 
     print(f"[DEBUG] browser type={type(_browser)}", flush=True)
-    if state_path.exists():
-        try:
-            _context = await _browser.new_context(storage_state=str(state_path), **ctx_kwargs)
-        except Exception as e:
-            print(f"⚠️ error applying storage_state: {e}\n   removing {state_path} and retrying", flush=True)
-            try:
-                state_path.unlink()
-            except OSError:
-                pass
-            _context = await _browser.new_context(**ctx_kwargs)
-    else:
-        _context = await _browser.new_context(**ctx_kwargs)
+    # Don't use storage_state to avoid captcha from old cookies
+    _context = await _browser.new_context(**ctx_kwargs)
 
     _page = await _context.new_page()
 
@@ -182,9 +172,9 @@ async def close_browser():
         except Exception as e:
             print(f"⚠️ close_browser: {name} failed: {e}")
 
-    # storage state as separate action for debug
-    if _context:
-        await _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
+    # Don't save storage_state to avoid issues
+    # if _context:
+    #     await _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
 
     await _safe_action("_page.close", _page.close if _page else None)
     await _safe_action("_context.close", _context.close if _context else None)
@@ -218,6 +208,14 @@ async def fetch(url: str) -> str:
             except:
                 pass
 
+            # scroll y movimientos humanos
+            for _ in range(random.randint(2, 4)):
+                x = random.randint(100, 1200)
+                y = random.randint(200, 700)
+                await _page.mouse.move(x, y)
+                await _page.mouse.wheel(0, random.randint(600, 1200))
+                await asyncio.sleep(random.uniform(0.8, 2.2))
+
             # bloquear la detección por el contenido de página de abuso
             blocked_text = await _page.locator("text=Se ha detectado un uso indebido").count() > 0
             blocked_text = blocked_text or await _page.locator("text=acceso se ha bloqueado").count() > 0
@@ -227,14 +225,6 @@ async def fetch(url: str) -> str:
                 await _page.screenshot(path="idealista_blocked.png")
                 print("[DEBUG] Bloqueo detectado en page, guardando idealista_blocked.png")
                 raise RuntimeError("🚨 Idealista bloqueado (captcha/antibots). Revisa idealista_blocked.png")
-
-            # scroll y movimientos humanos
-            for _ in range(random.randint(2, 4)):
-                x = random.randint(100, 1200)
-                y = random.randint(200, 700)
-                await _page.mouse.move(x, y)
-                await _page.mouse.wheel(0, random.randint(600, 1200))
-                await asyncio.sleep(random.uniform(0.8, 2.2))
 
             # esperar el contenido principal
             try:

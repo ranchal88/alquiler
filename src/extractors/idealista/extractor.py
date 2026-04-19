@@ -1,11 +1,11 @@
 import asyncio
 import os
-import time
 import re
 import random
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright_stealth import Stealth
 from pathlib import Path
 
 # ======================
@@ -26,10 +26,21 @@ HEADLESS = os.getenv("CI", "false").lower() == "true"
 PROXY = os.getenv("IDEALISTA_PROXY")
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+        "platform": "Windows",
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Not.A/Brand";v="8", "Chromium";v="125", "Google Chrome";v="125"',
+        "platform": "Windows",
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+        "platform": "Windows",
+    },
 ]
 
 def random_user_agent():
@@ -94,9 +105,11 @@ async def init_browser():
 
     print("[DEBUG] init_browser start", flush=True)
 
-    if _browser is not None:
-        print("[DEBUG] init_browser: browser already exists", flush=True)
+    if _browser is not None and _context is not None and _page is not None:
+        print("[DEBUG] init_browser: browser/context/page already exist", flush=True)
         return
+
+    await close_browser()
 
     if _playwright is None:
         print("[DEBUG] starting playwright", flush=True)
@@ -114,7 +127,7 @@ async def init_browser():
         slow_mo=40,
     )
 
-    state_path = Path("idealista_state.json")
+    profile = random_user_agent()
 
     ctx_kwargs = dict(
         locale="es-ES",
@@ -123,72 +136,56 @@ async def init_browser():
             "width": random.randint(1140, 1360),
             "height": random.randint(740, 860),
         },
-        user_agent=random_user_agent(),
+        user_agent=profile["ua"],
         java_script_enabled=True,
         bypass_csp=True,
         accept_downloads=False,
         extra_http_headers={
             "accept-language": "es-ES,es;q=0.9,en;q=0.8",
-            "sec-ch-ua": "\"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+            "sec-ch-ua": profile["sec_ch_ua"],
             "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\"",
+            "sec-ch-ua-platform": f'"{profile["platform"]}"',
         },
     )
 
     if PROXY:
         ctx_kwargs["proxy"] = {"server": PROXY}
 
-    print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, state_exists={state_path.exists()}, user_agent={ctx_kwargs['user_agent']}", flush=True)
+    print(f"[DEBUG] IDEALISTA_PROXY={PROXY!r}, user_agent={profile['ua']}", flush=True)
 
-    print(f"[DEBUG] browser type={type(_browser)}", flush=True)
-    # Don't use storage_state to avoid captcha from old cookies
     _context = await _browser.new_context(**ctx_kwargs)
-
     _page = await _context.new_page()
 
-    # Spoof common navigator properties
-    await _page.add_init_script(
-        """
-        Object.defineProperty(navigator, 'webdriver', {get: () => false});
-        Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es']});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        window.chrome = { runtime: {} };
-        """
-    )
+    await Stealth(
+        navigator_languages_override=("es-ES", "es"),
+        navigator_platform_override="Win32",
+    ).apply_stealth_async(_page)
 
 
 async def close_browser():
     global _page, _context, _browser, _playwright
 
-    async def _safe_action(name: str, action, timeout=12):
+    async def _safe_action(name: str, action, timeout=10):
         if action is None:
             return
         try:
-            print(f"[DEBUG] close_browser: {name} start")
+            print(f"[DEBUG] close_browser: {name} start", flush=True)
             result = action()
             if asyncio.iscoroutine(result):
-                await result
-            print(f"[DEBUG] close_browser: {name} ok")
+                await asyncio.wait_for(result, timeout=timeout)
+            print(f"[DEBUG] close_browser: {name} ok", flush=True)
         except Exception as e:
-            print(f"⚠️ close_browser: {name} failed: {e}")
+            print(f"⚠️ close_browser: {name} failed: {type(e).__name__}: {e}", flush=True)
 
-    # Don't save storage_state to avoid issues
-    # if _context:
-    #     await _safe_action("storage_state", lambda: _context.storage_state(path="idealista_state.json"))
-
-    await _safe_action("_page.close", _page.close if _page else None)
-    await _safe_action("_context.close", _context.close if _context else None)
-    await _safe_action("_browser.close", _browser.close if _browser else None)
-    # Don't stop playwright, keep it running
-    # await _safe_action("_playwright.stop", _playwright.stop if _playwright else None)
+    await _safe_action("_browser.close", _browser.close if _browser else None, timeout=8)
+    await _safe_action("_playwright.stop", _playwright.stop if _playwright else None, timeout=8)
 
     _page = None
     _context = None
     _browser = None
-    # Keep _playwright running
-    # _playwright = None
+    _playwright = None
 
-    print("✅ Navegador liberado")
+    print("✅ Navegador liberado", flush=True)
 
 
 
@@ -198,6 +195,24 @@ async def fetch(url: str) -> str:
         try:
             await init_browser()
             print(f"[DEBUG] fetch: intento {attempt} url={url}")
+
+            # warm-up: primera navegación siempre va a Google para no llegar en frío
+            if attempt == 1 and _page.url in ("about:blank", ""):
+                warmup_urls = [
+                    "https://www.google.es/search?q=pisos+alquiler+madrid",
+                    "https://www.bing.com/search?q=alquiler+madrid",
+                ]
+                try:
+                    warmup = random.choice(warmup_urls)
+                    print(f"[DEBUG] warm-up: {warmup}", flush=True)
+                    await _page.goto(warmup, timeout=20000, wait_until="domcontentloaded")
+                    await asyncio.sleep(random.uniform(3.0, 6.0))
+                    # scroll breve en la página de resultados
+                    await _page.mouse.wheel(0, random.randint(300, 700))
+                    await asyncio.sleep(random.uniform(1.0, 2.5))
+                except Exception:
+                    pass  # si falla el warm-up continuamos igualmente
+
             # navegación con ligeras esperas
             await _page.goto(url, timeout=45000, wait_until="domcontentloaded")
             await asyncio.sleep(random.uniform(1.2, 2.3))
@@ -236,18 +251,28 @@ async def fetch(url: str) -> str:
                     raise RuntimeError("🚨 Captcha visible en iframe. Revisa idealista_captcha_iframe.png")
                 raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Possible bloqueo.")
 
-            await asyncio.sleep(random.uniform(1.0, 2.5))
-            return await _page.content()
+            html = await asyncio.wait_for(_page.content(), timeout=10)
+            return html
 
         except Exception as e:
-            await close_browser()
+            msg = str(e)
+
+            browser_related = (
+                "Target page, context or browser has been closed" in msg
+                or "Connection closed" in msg
+                or "Browser has been closed" in msg
+                or isinstance(e, PlaywrightTimeoutError)
+            )
+
+            if browser_related:
+                await close_browser()
+
             if attempt < max_fetch_attempts:
                 wait = random.uniform(30, 60)
-                print(f"[WARN] fetch fallo ({attempt}/{max_fetch_attempts}): {e}. reintentando en {wait:.1f}s...")
+                print(f"[WARN] fetch fallo ({attempt}/{max_fetch_attempts}): {e}. reintentando en {wait:.1f}s...", flush=True)
                 await asyncio.sleep(wait)
                 continue
-            if "Target page, context or browser has been closed" in str(e):
-                raise RuntimeError("🚨 Página cerrada por bloqueo. Forzar reintento.") from e
+
             raise
 
 
@@ -351,10 +376,5 @@ async def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
             await asyncio.sleep(random.uniform(8, 15))
     finally:
         await close_browser()
-        if _playwright:
-            try:
-                await _playwright.stop()
-            except:
-                pass
 
     return all_results

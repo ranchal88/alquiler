@@ -242,14 +242,20 @@ async def fetch(url: str) -> str:
                 print("[DEBUG] Bloqueo detectado en page, guardando idealista_blocked.png")
                 raise RuntimeError("🚨 Idealista bloqueado (captcha/antibots). Revisa idealista_blocked.png")
 
-            # esperar el contenido principal
-            try:
-                await _page.wait_for_selector("article[data-element-id]", timeout=18000)
-            except PlaywrightTimeoutError:
-                if await _page.locator("iframe").count() > 0:
+            # si hay captcha en iframe, esperar a que el usuario lo resuelva manualmente
+            if await _page.locator("iframe").count() > 0:
+                print("⚠️  CAPTCHA detectado. Resuélvelo manualmente en el navegador. Esperando hasta 3 minutos...", flush=True)
+                try:
+                    await _page.wait_for_selector("article[data-element-id]", timeout=180000)
+                except PlaywrightTimeoutError:
                     await _page.screenshot(path="idealista_captcha_iframe.png")
-                    raise RuntimeError("🚨 Captcha visible en iframe. Revisa idealista_captcha_iframe.png")
-                raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Possible bloqueo.")
+                    raise RuntimeError("🚨 Captcha no resuelto en 3 minutos. Revisa idealista_captcha_iframe.png")
+            else:
+                # esperar el contenido principal sin captcha
+                try:
+                    await _page.wait_for_selector("article[data-element-id]", timeout=18000)
+                except PlaywrightTimeoutError:
+                    raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Posible bloqueo.")
 
             html = await asyncio.wait_for(_page.content(), timeout=10)
             return html

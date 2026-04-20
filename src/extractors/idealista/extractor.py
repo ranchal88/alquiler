@@ -5,8 +5,6 @@ import random
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from playwright_stealth import Stealth
-from pathlib import Path
 
 # ======================
 # CONFIGURACIÓN GENERAL
@@ -116,14 +114,14 @@ async def init_browser():
         _playwright = await async_playwright().__aenter__()
 
     print("[DEBUG] launching browser", flush=True)
+    launch_args = ["--disable-blink-features=AutomationControlled"]
+    if HEADLESS:
+        launch_args += ["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox"]
+
     _browser = await _playwright.chromium.launch(
         headless=HEADLESS,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-setuid-sandbox",
-        ],
+        channel="chrome",
+        args=launch_args,
         slow_mo=40,
     )
 
@@ -138,7 +136,6 @@ async def init_browser():
         },
         user_agent=profile["ua"],
         java_script_enabled=True,
-        bypass_csp=True,
         accept_downloads=False,
         extra_http_headers={
             "accept-language": "es-ES,es;q=0.9,en;q=0.8",
@@ -156,10 +153,15 @@ async def init_browser():
     _context = await _browser.new_context(**ctx_kwargs)
     _page = await _context.new_page()
 
-    await Stealth(
-        navigator_languages_override=("es-ES", "es"),
-        navigator_platform_override="Win32",
-    ).apply_stealth_async(_page)
+    _page.on("console", lambda msg: print(f"[BROWSER:{msg.type}] {msg.text}", flush=True))
+    _page.on("response", lambda r: print(f"[RESPONSE] {r.status} {r.url[:120]}", flush=True) if "idealista" in r.url else None)
+
+    await _page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'languages', {get: () => ['es-ES', 'es']});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        window.chrome = { runtime: {} };
+    """)
 
 
 async def close_browser():
@@ -215,6 +217,7 @@ async def fetch(url: str) -> str:
 
             # navegación con ligeras esperas
             await _page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            print(f"[DEBUG] page url tras goto: {_page.url}", flush=True)
             await asyncio.sleep(random.uniform(1.2, 2.3))
 
             # aceptar cookies SOLO una vez
@@ -232,29 +235,45 @@ async def fetch(url: str) -> str:
                 await _page.mouse.wheel(0, random.randint(600, 1200))
                 await asyncio.sleep(random.uniform(0.8, 2.2))
 
-            # bloquear la detección por el contenido de página de abuso
-            blocked_text = await _page.locator("text=Se ha detectado un uso indebido").count() > 0
-            blocked_text = blocked_text or await _page.locator("text=acceso se ha bloqueado").count() > 0
-            blocked_text = blocked_text or await _page.locator("text=uso indebido").count() > 0
-            blocked_text = blocked_text or await _page.locator("text=blocked").count() > 0
-            if blocked_text:
+            print(f"[DEBUG] page url tras scroll: {_page.url}", flush=True)
+            print(f"[DEBUG] iframes en página: {await _page.locator('iframe').count()}", flush=True)
+            print(f"[DEBUG] título de página: {await _page.title()}", flush=True)
+
+            # detectar bloqueo duro inmediato
+            def _is_blocked_text(t: str) -> bool:
+                return any(x in t for x in ["uso indebido", "acceso se ha bloqueado", "blocked"])
+
+            page_text = await _page.inner_text("body")
+            print(f"[DEBUG] primeros 300 chars body: {page_text[:300]!r}", flush=True)
+            if _is_blocked_text(page_text.lower()):
                 await _page.screenshot(path="idealista_blocked.png")
-                print("[DEBUG] Bloqueo detectado en page, guardando idealista_blocked.png")
-                raise RuntimeError("🚨 Idealista bloqueado (captcha/antibots). Revisa idealista_blocked.png")
+                raise RuntimeError("🚨 Idealista bloqueado (hard block). Revisa idealista_blocked.png")
 
             # si hay captcha en iframe, esperar a que el usuario lo resuelva manualmente
             if await _page.locator("iframe").count() > 0:
                 print("⚠️  CAPTCHA detectado. Resuélvelo manualmente en el navegador. Esperando hasta 3 minutos...", flush=True)
-                try:
-                    await _page.wait_for_selector("article[data-element-id]", timeout=180000)
-                except PlaywrightTimeoutError:
+                # polling cada 3s para detectar resultado (éxito o bloqueo) sin esperar timeout completo
+                for _ in range(60):
+                    await asyncio.sleep(3)
+                    current_url = _page.url
+                    body = await _page.inner_text("body")
+                    print(f"[DEBUG] captcha-wait: url={current_url} | body[:100]={body[:100]!r}", flush=True)
+                    if await _page.locator("article[data-element-id]").count() > 0:
+                        print("[DEBUG] Captcha resuelto, anuncios detectados", flush=True)
+                        break
+                    if _is_blocked_text(body.lower()):
+                        await _page.screenshot(path="idealista_captcha_iframe.png")
+                        raise RuntimeError("🚨 Captcha resuelto pero Idealista bloqueó igualmente. Revisa idealista_captcha_iframe.png")
+                else:
                     await _page.screenshot(path="idealista_captcha_iframe.png")
-                    raise RuntimeError("🚨 Captcha no resuelto en 3 minutos. Revisa idealista_captcha_iframe.png")
+                    raise RuntimeError("🚨 Captcha no resuelto en 3 minutos.")
             else:
                 # esperar el contenido principal sin captcha
                 try:
                     await _page.wait_for_selector("article[data-element-id]", timeout=18000)
                 except PlaywrightTimeoutError:
+                    print(f"[DEBUG] timeout sin captcha, url={_page.url}", flush=True)
+                    await _page.screenshot(path="idealista_no_content.png")
                     raise RuntimeError("🚨 No se cargó contenido de lista de anuncios. Posible bloqueo.")
 
             html = await asyncio.wait_for(_page.content(), timeout=10)

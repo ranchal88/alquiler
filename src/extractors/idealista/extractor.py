@@ -380,5 +380,8 @@ async def extract_all_neighborhoods(pages: int = 3) -> list[dict]:
             await asyncio.sleep(random.uniform(5, 9))
     finally:
         await close_browser()
+        # Deja que el loop drene callbacks pendientes de los subprocesos de Playwright
+        # antes de que asyncio.run() lo cierre (evita el warning en Windows).
+        await asyncio.sleep(0.5)
 
     return all_results

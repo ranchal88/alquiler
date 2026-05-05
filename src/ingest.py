@@ -51,7 +51,7 @@ def ingest_listings(conn, listings, neighborhood_map, source, max_retries: int =
                 continue
 
             price_m2 = price / m2
-            if not (6 <= price_m2 <= 50):
+            if not (8 <= price_m2 <= 45):
                 continue
 
             fp = fingerprint_listing(price, m2, rooms, neighborhood_id)

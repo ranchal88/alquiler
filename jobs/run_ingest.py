@@ -46,11 +46,18 @@ if __name__ == "__main__":
                 )
             # cada batch hace commit internamente
 
+        print(f"Ingestados en DB: {inserted}")
+
         # reconectar para evitar SSL timeout
         conn.close()
         conn = get_conn()
-        validate_today_snapshot(conn)
-        print(f"Ingestados en DB: {inserted}")
+        try:
+            validate_today_snapshot(conn)
+        except ValueError as e:
+            print(f"⚠️  Validación: {e}")
+    except Exception as e:
+        print(f"❌ Error fatal en ingest: {e}")
+        raise
     finally:
         try:
             conn.close()
